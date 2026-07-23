@@ -1,5 +1,564 @@
 <!DOCTYPE html>
 <html lang="es">
-<head><meta charset="UTF-8"><title>Mi estudio</title></head>
-<body><h1>Pronto aquí estará mi sitio</h1></body>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Cuadernos — Mapas conceptuales</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root{
+    --bg:#fbfbfd; --sidebar:#ffffff; --line:#e5e7eb; --ink:#1f2937;
+    --muted:#6b7280; --accent:#2563eb; --accent-soft:#e6f0ff;
+  }
+  html,body{ height:100%; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); }
+  #app{ display:flex; height:100vh; width:100vw; overflow:hidden; }
+
+  /* ---------- Área del lienzo ---------- */
+  #canvas-area{ position:relative; flex:1; min-width:0; }
+  #viewport{
+    position:absolute; inset:0; overflow:hidden; cursor:grab;
+    background-color:var(--bg);
+    background-image: radial-gradient(circle, #d7d9e0 1.2px, transparent 1.2px);
+    background-size:24px 24px;
+  }
+  #viewport.panning{ cursor:grabbing; }
+  body.dragging{ user-select:none; }
+  #world{ position:absolute; top:0; left:0; transform-origin:0 0; }
+  #edges{ position:absolute; top:0; left:0; width:1px; height:1px; overflow:visible; }
+  #nodes-layer{ position:absolute; top:0; left:0; }
+
+  /* ---------- Nodos (ideas) ---------- */
+  .node{
+    position:absolute; min-width:70px; max-width:240px; min-height:38px;
+    padding:10px 14px; border:2px solid #cbd5e1; background:#fff; border-radius:12px;
+    box-shadow:0 2px 6px rgba(15,23,42,.08); cursor:grab; font-size:15px; line-height:1.35;
+  }
+  .node.sel{ outline:2px solid var(--accent); outline-offset:2px; }
+  .node-text{ white-space:pre-wrap; word-break:break-word; outline:none; min-height:19px; }
+  .node.editing{ cursor:text; }
+  .node.editing .node-text:empty:before{ content:"Escribe tu idea…"; color:#9aa3b2; }
+  .node.drop-target{ outline:2px dashed var(--accent); outline-offset:2px; }
+  .connector{
+    position:absolute; bottom:-8px; left:50%; transform:translateX(-50%);
+    width:14px; height:14px; border-radius:50%; background:var(--accent);
+    border:2px solid #fff; box-shadow:0 1px 3px rgba(0,0,0,.3);
+    cursor:crosshair; opacity:0; transition:opacity .12s;
+  }
+  .node:hover .connector, .node.sel .connector{ opacity:1; }
+
+  /* ---------- Aristas (flechas) ---------- */
+  .edge-line{ stroke:#94a3b8; stroke-width:2; fill:none; pointer-events:none; }
+  .edge-line.sel{ stroke:var(--accent); stroke-width:3; }
+  .edge-hit{ stroke:transparent; stroke-width:16; fill:none; pointer-events:stroke; cursor:pointer; }
+  .edge-temp{ stroke:var(--accent); stroke-width:2; stroke-dasharray:6 5; fill:none; pointer-events:none; }
+
+  /* ---------- Barra superior ---------- */
+  #toolbar{
+    position:absolute; top:14px; left:14px; display:flex; align-items:center; gap:6px;
+    background:#fff; border:1px solid var(--line); border-radius:12px; padding:6px;
+    box-shadow:0 4px 14px rgba(15,23,42,.08); z-index:10;
+  }
+  #toolbar button, #selection-bar button{
+    border:none; background:transparent; border-radius:8px; padding:7px 11px; cursor:pointer;
+    font-size:14px; color:var(--ink); font-weight:500;
+  }
+  #toolbar button:hover, #selection-bar button:hover{ background:#f1f3f7; }
+  #btn-add{ background:var(--accent); color:#fff; }
+  #btn-add:hover{ background:#1d4fd8; }
+  .divider{ width:1px; height:22px; background:var(--line); margin:0 3px; }
+  #zoom-label{ font-size:13px; color:var(--muted); min-width:42px; text-align:center; }
+
+  /* ---------- Barra de selección (color / borrar) ---------- */
+  #selection-bar{
+    position:absolute; top:14px; left:50%; transform:translateX(-50%);
+    display:flex; align-items:center; gap:8px;
+    background:#fff; border:1px solid var(--line); border-radius:12px; padding:6px 10px;
+    box-shadow:0 4px 14px rgba(15,23,42,.12); z-index:10;
+  }
+  #selection-bar.hidden{ display:none; }
+  .sb-label{ font-size:13px; color:var(--muted); }
+  #palette{ display:flex; gap:6px; }
+  .swatch{ width:20px; height:20px; border-radius:50%; cursor:pointer; border:2px solid #fff; box-shadow:0 0 0 1px #d1d5db; }
+  .swatch:hover{ transform:scale(1.12); }
+  #btn-delete{ color:#dc2626; }
+
+  #hint{
+    position:absolute; bottom:14px; left:14px; z-index:5;
+    background:rgba(255,255,255,.9); border:1px solid var(--line); border-radius:10px;
+    padding:8px 12px; font-size:12.5px; color:var(--muted); max-width:min(90%,520px);
+  }
+
+  /* ---------- Barra lateral (cuadernos) ---------- */
+  #sidebar{ width:260px; background:var(--sidebar); border-left:1px solid var(--line); display:flex; flex-direction:column; }
+  .sidebar-header{ display:flex; align-items:center; justify-content:space-between; padding:16px 16px 12px; border-bottom:1px solid var(--line); }
+  .sidebar-header h1{ font-size:16px; letter-spacing:.2px; }
+  #btn-new-notebook{ width:30px; height:30px; border:none; border-radius:8px; background:var(--accent-soft); color:var(--accent); font-size:18px; cursor:pointer; }
+  #btn-new-notebook:hover{ background:#d5e4ff; }
+  #notebook-list{ list-style:none; flex:1; overflow-y:auto; padding:8px; }
+  .nb-item{ display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:10px; cursor:pointer; }
+  .nb-item:hover{ background:#f5f6f9; }
+  .nb-item.active{ background:var(--accent-soft); }
+  .nb-dot{ width:12px; height:12px; border-radius:50%; flex:none; }
+  .nb-name{ flex:1; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .nb-del{ border:none; background:transparent; cursor:pointer; opacity:0; font-size:14px; padding:2px 4px; border-radius:6px; }
+  .nb-item:hover .nb-del{ opacity:.55; }
+  .nb-del:hover{ opacity:1 !important; background:#fde8e8; }
+  .sidebar-footer{ padding:12px 16px; font-size:12px; color:#b6bcc7; border-top:1px solid var(--line); text-align:center; }
+</style>
+</head>
+<body>
+<div id="app">
+  <main id="canvas-area">
+    <div id="viewport">
+      <div id="world">
+        <svg id="edges" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <marker id="arrowhead" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"></path>
+            </marker>
+          </defs>
+          <g id="edges-layer"></g>
+        </svg>
+        <div id="nodes-layer"></div>
+      </div>
+    </div>
+
+    <div id="toolbar">
+      <button id="btn-add" title="Nueva idea (o doble clic en el lienzo)">＋ Idea</button>
+      <div class="divider"></div>
+      <button id="btn-zoom-out" title="Alejar">－</button>
+      <span id="zoom-label">100%</span>
+      <button id="btn-zoom-in" title="Acercar">＋</button>
+      <button id="btn-fit" title="Centrar todo">⤢</button>
+    </div>
+
+    <div id="selection-bar" class="hidden">
+      <span class="sb-label" id="sb-color-label">Color:</span>
+      <div id="palette"></div>
+      <div class="divider" id="sb-divider"></div>
+      <button id="btn-delete" title="Eliminar (tecla Supr)">🗑 Eliminar</button>
+    </div>
+
+    <div id="hint">Doble clic en el lienzo para crear una idea · Arrastra el punto azul de una idea hacia otra para conectarlas con una flecha · Rueda del mouse para acercar/alejar</div>
+  </main>
+
+  <aside id="sidebar">
+    <div class="sidebar-header">
+      <h1>Cuadernos</h1>
+      <button id="btn-new-notebook" title="Nuevo cuaderno">＋</button>
+    </div>
+    <ul id="notebook-list"></ul>
+    <div class="sidebar-footer">cuadernos.xyz</div>
+  </aside>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- Colores ----------
+  const COLORS = {
+    slate:  { bg:"#ffffff", border:"#cbd5e1" },
+    yellow: { bg:"#fff7db", border:"#f2c94c" },
+    green:  { bg:"#e6f7ec", border:"#5cc98a" },
+    blue:   { bg:"#e6f0ff", border:"#6aa3f5" },
+    pink:   { bg:"#ffe9f3", border:"#f19ac2" },
+    purple: { bg:"#efe9ff", border:"#a988f0" },
+    orange: { bg:"#fff0e0", border:"#f6b071" }
+  };
+  const COLOR_KEYS = ["slate","yellow","green","blue","pink","purple","orange"];
+  const NB_DOTS = ["#3b82f6","#22c55e","#eab308","#ec4899","#8b5cf6","#f97316","#14b8a6"];
+
+  // ---------- Estado ----------
+  const KEY = "cuadernos_data_v1";
+  const GRID = 24;
+  let state = { notebooks: [], current: null };
+  let scale = 1, offsetX = 0, offsetY = 0;
+  let selected = null;      // { type:"node"|"edge", id }
+  let editingId = null;
+  let drag = null;          // { mode, ... }
+  const SVGNS = "http://www.w3.org/2000/svg";
+
+  // ---------- Referencias DOM ----------
+  const viewport   = document.getElementById("viewport");
+  const world      = document.getElementById("world");
+  const nodesLayer = document.getElementById("nodes-layer");
+  const edgesLayer = document.getElementById("edges-layer");
+  const zoomLabel  = document.getElementById("zoom-label");
+  const selBar     = document.getElementById("selection-bar");
+  const palette    = document.getElementById("palette");
+  const nbList     = document.getElementById("notebook-list");
+
+  // ---------- Utilidades ----------
+  const uid = (p) => (p||"id") + "_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2,6);
+  const clamp = (v,min,max) => Math.max(min, Math.min(max, v));
+  const nb = () => state.notebooks.find(n => n.id === state.current);
+  const nodeById = (id) => nb().nodes.find(n => n.id === id);
+  const nodeEl = (id) => nodesLayer.querySelector('.node[data-id="'+id+'"]');
+
+  let saveT;
+  function save(){ clearTimeout(saveT); saveT = setTimeout(() => localStorage.setItem(KEY, JSON.stringify(state)), 120); }
+
+  function screenToWorld(cx, cy){
+    const r = viewport.getBoundingClientRect();
+    return { x:(cx - r.left - offsetX)/scale, y:(cy - r.top - offsetY)/scale };
+  }
+
+  // ---------- Transform / zoom / pan ----------
+  function applyTransform(){
+    world.style.transform = "translate("+offsetX+"px,"+offsetY+"px) scale("+scale+")";
+    viewport.style.backgroundSize = (GRID*scale)+"px "+(GRID*scale)+"px";
+    viewport.style.backgroundPosition = offsetX+"px "+offsetY+"px";
+    zoomLabel.textContent = Math.round(scale*100) + "%";
+  }
+  function zoomAt(cx, cy, factor){
+    const w = screenToWorld(cx, cy);
+    const ns = clamp(scale*factor, 0.2, 3);
+    const r = viewport.getBoundingClientRect();
+    offsetX = (cx - r.left) - w.x*ns;
+    offsetY = (cy - r.top)  - w.y*ns;
+    scale = ns;
+    applyTransform();
+  }
+  function zoomCenter(factor){
+    const r = viewport.getBoundingClientRect();
+    zoomAt(r.left + r.width/2, r.top + r.height/2, factor);
+  }
+  function fitView(){
+    const n = nb();
+    const r = viewport.getBoundingClientRect();
+    if(!n || n.nodes.length === 0){ scale = 1; offsetX = r.width/2; offsetY = r.height/2; applyTransform(); return; }
+    let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    for(const node of n.nodes){
+      const el = nodeEl(node.id); const w = el?el.offsetWidth:150; const h = el?el.offsetHeight:44;
+      minX=Math.min(minX,node.x); minY=Math.min(minY,node.y);
+      maxX=Math.max(maxX,node.x+w); maxY=Math.max(maxY,node.y+h);
+    }
+    const pad=90, bw=(maxX-minX)+pad*2, bh=(maxY-minY)+pad*2;
+    scale = clamp(Math.min(r.width/bw, r.height/bh, 1.4), 0.2, 1.4);
+    const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+    offsetX = r.width/2 - cx*scale;
+    offsetY = r.height/2 - cy*scale;
+    applyTransform();
+  }
+
+  // ---------- Render nodos ----------
+  function renderNodes(){
+    nodesLayer.innerHTML = "";
+    const n = nb(); if(!n) return;
+    for(const node of n.nodes){
+      const el = document.createElement("div");
+      el.className = "node";
+      el.dataset.id = node.id;
+      el.style.left = node.x + "px";
+      el.style.top  = node.y + "px";
+      const c = COLORS[node.color] || COLORS.slate;
+      el.style.background = c.bg; el.style.borderColor = c.border;
+      const txt = document.createElement("div");
+      txt.className = "node-text";
+      txt.innerText = node.text || "";
+      const conn = document.createElement("div");
+      conn.className = "connector";
+      conn.title = "Arrastra hasta otra idea para conectar";
+      el.appendChild(txt); el.appendChild(conn);
+      nodesLayer.appendChild(el);
+    }
+    applySelection();
+  }
+
+  // ---------- Render aristas (flechas) ----------
+  function rectOf(node){
+    const el = nodeEl(node.id);
+    return { x:node.x, y:node.y, w: el?el.offsetWidth:150, h: el?el.offsetHeight:44 };
+  }
+  function borderPoint(rect, tx, ty){
+    const cx=rect.x+rect.w/2, cy=rect.y+rect.h/2, dx=tx-cx, dy=ty-cy;
+    if(dx===0 && dy===0) return {x:cx,y:cy};
+    const sx = dx!==0 ? (rect.w/2)/Math.abs(dx) : Infinity;
+    const sy = dy!==0 ? (rect.h/2)/Math.abs(dy) : Infinity;
+    const s = Math.min(sx, sy);
+    return { x:cx+dx*s, y:cy+dy*s };
+  }
+  function renderEdges(){
+    edgesLayer.innerHTML = "";
+    const n = nb(); if(!n) return;
+    for(const e of n.edges){
+      const a = nodeById(e.from), b = nodeById(e.to);
+      if(!a || !b) continue;
+      const ra = rectOf(a), rb = rectOf(b);
+      const ca = { x:ra.x+ra.w/2, y:ra.y+ra.h/2 }, cb = { x:rb.x+rb.w/2, y:rb.y+rb.h/2 };
+      const p1 = borderPoint(ra, cb.x, cb.y);
+      const p2 = borderPoint(rb, ca.x, ca.y);
+      const d = "M "+p1.x+" "+p1.y+" L "+p2.x+" "+p2.y;
+      const hit = document.createElementNS(SVGNS,"path");
+      hit.setAttribute("d", d); hit.setAttribute("class","edge-hit"); hit.dataset.id = e.id;
+      const line = document.createElementNS(SVGNS,"path");
+      line.setAttribute("d", d);
+      line.setAttribute("class","edge-line" + (selected && selected.type==="edge" && selected.id===e.id ? " sel" : ""));
+      line.setAttribute("marker-end","url(#arrowhead)");
+      edgesLayer.appendChild(hit); edgesLayer.appendChild(line);
+    }
+  }
+  function renderAll(){ renderNodes(); renderEdges(); }
+
+  // ---------- Selección ----------
+  function applySelection(){
+    nodesLayer.querySelectorAll(".node.sel").forEach(el => el.classList.remove("sel"));
+    if(selected && selected.type==="node"){ const el = nodeEl(selected.id); if(el) el.classList.add("sel"); }
+  }
+  function showSelBar(kind){
+    selBar.classList.remove("hidden");
+    const isNode = kind === "node";
+    palette.style.display = isNode ? "flex" : "none";
+    document.getElementById("sb-color-label").style.display = isNode ? "inline" : "none";
+    document.getElementById("sb-divider").style.display = isNode ? "block" : "none";
+  }
+  function selectNode(id){ selected = { type:"node", id }; applySelection(); showSelBar("node"); }
+  function selectEdge(id){ selected = { type:"edge", id }; applySelection(); renderEdges(); showSelBar("edge"); }
+  function deselect(){ selected = null; applySelection(); renderEdges(); selBar.classList.add("hidden"); }
+
+  // ---------- Crear / editar / borrar nodos ----------
+  function addNode(x, y, opts){
+    opts = opts || {};
+    const node = { id: uid("n"), x: x-80, y: y-22, text: opts.text||"", color: opts.color||"slate" };
+    nb().nodes.push(node);
+    renderNodes(); renderEdges(); save();
+    if(!opts.silent){ selectNode(node.id); enterEdit(node.id); }
+    return node;
+  }
+  function addNodeAtCenter(){
+    const r = viewport.getBoundingClientRect();
+    const w = screenToWorld(r.left + r.width/2, r.top + r.height/2);
+    addNode(w.x, w.y);
+  }
+  function enterEdit(id){
+    const el = nodeEl(id); if(!el) return;
+    const txt = el.querySelector(".node-text");
+    el.classList.add("editing"); txt.contentEditable = "true"; editingId = id;
+    txt.focus();
+    const range = document.createRange(); range.selectNodeContents(txt); range.collapse(false);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+  }
+  function deleteNode(id){
+    const n = nb();
+    n.nodes = n.nodes.filter(x => x.id !== id);
+    n.edges = n.edges.filter(e => e.from !== id && e.to !== id);
+    deselect(); renderAll(); save();
+  }
+  function addEdge(from, to){
+    const n = nb();
+    if(from === to) return;
+    if(n.edges.some(e => e.from===from && e.to===to)) return;
+    n.edges.push({ id: uid("e"), from, to });
+    renderEdges(); save();
+  }
+  function deleteEdge(id){
+    const n = nb(); n.edges = n.edges.filter(e => e.id !== id);
+    deselect(); renderEdges(); save();
+  }
+
+  // Edición de texto (delegada)
+  nodesLayer.addEventListener("dblclick", (e) => {
+    const el = e.target.closest(".node"); if(!el) return;
+    e.stopPropagation(); selectNode(el.dataset.id); enterEdit(el.dataset.id);
+  });
+  nodesLayer.addEventListener("input", (e) => {
+    if(!e.target.classList.contains("node-text")) return;
+    const el = e.target.closest(".node"); const node = nodeById(el.dataset.id);
+    if(node){ node.text = e.target.innerText; renderEdges(); save(); }
+  });
+  nodesLayer.addEventListener("focusout", (e) => {
+    if(!e.target.classList.contains("node-text")) return;
+    const el = e.target.closest(".node"); if(!el) return;
+    el.classList.remove("editing"); e.target.contentEditable = "false";
+    const node = nodeById(el.dataset.id);
+    if(node){ node.text = e.target.innerText; save(); }
+    editingId = null; renderEdges();
+  });
+
+  // ---------- Interacción: pan / mover / conectar ----------
+  viewport.addEventListener("mousedown", (e) => {
+    if(e.button !== 0) return;
+    const conn = e.target.closest(".connector");
+    const nodeElm = e.target.closest(".node");
+    const edgeHit = e.target.closest(".edge-hit");
+    if(conn && nodeElm){ startConnect(nodeElm.dataset.id, e); e.preventDefault(); return; }
+    if(nodeElm){
+      if(nodeElm.classList.contains("editing")) return;
+      selectNode(nodeElm.dataset.id); startNodeDrag(nodeElm.dataset.id, e); e.preventDefault(); return;
+    }
+    if(edgeHit){ selectEdge(edgeHit.dataset.id); return; }
+    startPan(e);
+  });
+  viewport.addEventListener("dblclick", (e) => {
+    if(e.target.closest(".node")) return;
+    const w = screenToWorld(e.clientX, e.clientY); addNode(w.x, w.y);
+  });
+
+  function startPan(e){
+    drag = { mode:"pan", sx:e.clientX, sy:e.clientY, ox:offsetX, oy:offsetY, moved:false };
+    viewport.classList.add("panning"); document.body.classList.add("dragging");
+  }
+  function startNodeDrag(id, e){
+    const node = nodeById(id);
+    drag = { mode:"node", id, sx:e.clientX, sy:e.clientY, nx:node.x, ny:node.y, moved:false };
+    document.body.classList.add("dragging");
+  }
+  function startConnect(id, e){
+    drag = { mode:"connect", id, tx:0, ty:0 };
+    const w = screenToWorld(e.clientX, e.clientY); drag.tx = w.x; drag.ty = w.y;
+    const p = document.createElementNS(SVGNS,"path"); p.setAttribute("class","edge-temp"); p.id = "temp-edge";
+    edgesLayer.appendChild(p); updateTempEdge();
+    document.body.classList.add("dragging");
+  }
+  function updateTempEdge(){
+    const p = document.getElementById("temp-edge"); if(!p) return;
+    const r = rectOf(nodeById(drag.id));
+    const start = borderPoint(r, drag.tx, drag.ty);
+    p.setAttribute("d", "M "+start.x+" "+start.y+" L "+drag.tx+" "+drag.ty);
+  }
+  function nodeElementAt(cx, cy){ const el = document.elementFromPoint(cx, cy); return el ? el.closest(".node") : null; }
+
+  window.addEventListener("mousemove", (e) => {
+    if(!drag) return;
+    if(drag.mode === "pan"){
+      const dx = e.clientX-drag.sx, dy = e.clientY-drag.sy;
+      if(Math.abs(dx)>3 || Math.abs(dy)>3) drag.moved = true;
+      offsetX = drag.ox+dx; offsetY = drag.oy+dy; applyTransform();
+    } else if(drag.mode === "node"){
+      const dx = (e.clientX-drag.sx)/scale, dy = (e.clientY-drag.sy)/scale;
+      const node = nodeById(drag.id); node.x = drag.nx+dx; node.y = drag.ny+dy;
+      const el = nodeEl(drag.id); el.style.left = node.x+"px"; el.style.top = node.y+"px";
+      if(Math.abs(dx)>1 || Math.abs(dy)>1) drag.moved = true;
+      renderEdges();
+    } else if(drag.mode === "connect"){
+      const w = screenToWorld(e.clientX, e.clientY); drag.tx = w.x; drag.ty = w.y; updateTempEdge();
+      const t = nodeElementAt(e.clientX, e.clientY);
+      nodesLayer.querySelectorAll(".node.drop-target").forEach(el => el.classList.remove("drop-target"));
+      if(t && t.dataset.id !== drag.id) t.classList.add("drop-target");
+    }
+  });
+  window.addEventListener("mouseup", (e) => {
+    if(!drag) return;
+    if(drag.mode === "pan"){ if(!drag.moved) deselect(); }
+    else if(drag.mode === "node"){ if(drag.moved) save(); }
+    else if(drag.mode === "connect"){
+      const t = nodeElementAt(e.clientX, e.clientY);
+      nodesLayer.querySelectorAll(".node.drop-target").forEach(el => el.classList.remove("drop-target"));
+      const tmp = document.getElementById("temp-edge"); if(tmp) tmp.remove();
+      if(t && t.dataset.id !== drag.id) addEdge(drag.id, t.dataset.id);
+    }
+    drag = null; viewport.classList.remove("panning"); document.body.classList.remove("dragging");
+  });
+
+  viewport.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.12 : 1/1.12);
+  }, { passive:false });
+
+  // Teclado: borrar selección (solo si no estás escribiendo)
+  window.addEventListener("keydown", (e) => {
+    if(editingId) return;
+    if((e.key === "Delete" || e.key === "Backspace") && selected){
+      e.preventDefault();
+      if(selected.type === "node") deleteNode(selected.id); else deleteEdge(selected.id);
+    } else if(e.key === "Escape"){ deselect(); }
+  });
+
+  // ---------- Barra superior ----------
+  document.getElementById("btn-add").onclick = addNodeAtCenter;
+  document.getElementById("btn-zoom-in").onclick = () => zoomCenter(1.15);
+  document.getElementById("btn-zoom-out").onclick = () => zoomCenter(1/1.15);
+  document.getElementById("btn-fit").onclick = fitView;
+
+  // ---------- Paleta de colores ----------
+  COLOR_KEYS.forEach(key => {
+    const s = document.createElement("div");
+    s.className = "swatch"; s.style.background = COLORS[key].bg; s.style.boxShadow = "0 0 0 1px "+COLORS[key].border;
+    s.title = key;
+    s.onclick = () => {
+      if(selected && selected.type === "node"){
+        const node = nodeById(selected.id); node.color = key;
+        renderNodes(); renderEdges(); save();
+      }
+    };
+    palette.appendChild(s);
+  });
+  document.getElementById("btn-delete").onclick = () => {
+    if(!selected) return;
+    if(selected.type === "node") deleteNode(selected.id); else deleteEdge(selected.id);
+  };
+
+  // ---------- Cuadernos (barra lateral) ----------
+  function renderNotebooks(){
+    nbList.innerHTML = "";
+    state.notebooks.forEach((n, i) => {
+      const li = document.createElement("li");
+      li.className = "nb-item" + (n.id === state.current ? " active" : "");
+      li.dataset.id = n.id;
+      const dot = document.createElement("span"); dot.className = "nb-dot"; dot.style.background = n.color || NB_DOTS[i % NB_DOTS.length];
+      const name = document.createElement("span"); name.className = "nb-name"; name.textContent = n.name;
+      const del = document.createElement("button"); del.className = "nb-del"; del.textContent = "🗑"; del.title = "Eliminar cuaderno";
+      li.appendChild(dot); li.appendChild(name); li.appendChild(del);
+      nbList.appendChild(li);
+    });
+  }
+  nbList.addEventListener("click", (e) => {
+    const li = e.target.closest(".nb-item"); if(!li) return;
+    if(e.target.classList.contains("nb-del")){
+      e.stopPropagation();
+      if(state.notebooks.length <= 1){ alert("Debe existir al menos un cuaderno."); return; }
+      const n = state.notebooks.find(x => x.id === li.dataset.id);
+      if(confirm('¿Eliminar el cuaderno "'+n.name+'" y todo su mapa? Esto no se puede deshacer.')){
+        state.notebooks = state.notebooks.filter(x => x.id !== li.dataset.id);
+        if(state.current === li.dataset.id) state.current = state.notebooks[0].id;
+        renderNotebooks(); deselect(); renderAll(); fitView(); save();
+      }
+      return;
+    }
+    switchNotebook(li.dataset.id);
+  });
+  nbList.addEventListener("dblclick", (e) => {
+    const li = e.target.closest(".nb-item"); if(!li) return;
+    const n = state.notebooks.find(x => x.id === li.dataset.id);
+    const name = prompt("Nombre del cuaderno:", n.name);
+    if(name && name.trim()){ n.name = name.trim(); renderNotebooks(); save(); }
+  });
+  function switchNotebook(id){ state.current = id; deselect(); renderNotebooks(); renderAll(); fitView(); save(); }
+  function newNotebook(){
+    const name = prompt("Nombre del nuevo cuaderno:", "Nueva materia");
+    if(!name || !name.trim()) return;
+    const n = { id: uid("nb"), name: name.trim(), color: NB_DOTS[state.notebooks.length % NB_DOTS.length], nodes: [], edges: [] };
+    state.notebooks.push(n); switchNotebook(n.id);
+  }
+  document.getElementById("btn-new-notebook").onclick = newNotebook;
+
+  // ---------- Inicio ----------
+  function seed(){
+    const n = { id: uid("nb"), name: "Mi primer cuaderno", color: NB_DOTS[0], nodes: [], edges: [] };
+    const a = { id: uid("n"), x:-120, y:-40, text:"Bienvenido a Cuadernos", color:"blue" };
+    const b = { id: uid("n"), x: 160, y:-90, text:"Doble clic en el lienzo
+para crear una idea", color:"yellow" };
+    const c = { id: uid("n"), x: 160, y: 40, text:"Arrastra el punto azul
+para conectar ideas", color:"green" };
+    n.nodes.push(a,b,c);
+    n.edges.push({ id: uid("e"), from:a.id, to:b.id }, { id: uid("e"), from:a.id, to:c.id });
+    state.notebooks.push(n); state.current = n.id;
+  }
+  function load(){
+    try{
+      const raw = localStorage.getItem(KEY);
+      if(raw){ const parsed = JSON.parse(raw); if(parsed && parsed.notebooks && parsed.notebooks.length){ state = parsed; return; } }
+    }catch(err){ /* datos corruptos: empezamos limpio */ }
+    seed();
+  }
+
+  load();
+  renderNotebooks();
+  applyTransform();
+  renderAll();
+  fitView();
+})();
+</script>
+</body>
 </html>
